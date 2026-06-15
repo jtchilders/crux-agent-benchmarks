@@ -4,7 +4,7 @@
 #PBS -l place=scatter
 #PBS -l walltime=1:00:00
 #PBS -q debug
-#PBS -A YOUR_PROJECT_HERE
+#PBS -A datascience
 #PBS -l filesystems=home
 #PBS -o logs/benchmark.out
 #PBS -e logs/benchmark.err
@@ -36,10 +36,12 @@ SWEEP=1                  # 1=run sweep across concurrency levels, 0=single run
 CONCURRENCY=16           # used only if SWEEP=0
 SWEEP_LEVELS="1,2,4,8,16,32"
 
-# Proxy (needed for outbound HTTPS from compute nodes; ALCF internal may not need this)
+# Proxy — required for outbound HTTPS from compute nodes
 export http_proxy="http://proxy.alcf.anl.gov:3128"
 export https_proxy="http://proxy.alcf.anl.gov:3128"
 export ftp_proxy="http://proxy.alcf.anl.gov:3128"
+export HTTP_PROXY="http://proxy.alcf.anl.gov:3128"
+export HTTPS_PROXY="http://proxy.alcf.anl.gov:3128"
 
 # --- Setup ---
 echo "=========================================="
