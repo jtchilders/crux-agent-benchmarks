@@ -1,0 +1,112 @@
+#!/bin/bash -l
+#PBS -N alcf-full-sweep
+#PBS -l select=1:system=crux
+#PBS -l place=scatter
+#PBS -l walltime=4:00:00
+#PBS -q workq-route
+#PBS -A datascience
+#PBS -l filesystems=home
+#PBS -o logs/full_sweep.out
+#PBS -e logs/full_sweep.err
+
+# ============================================================
+# ALCF Inference Endpoint — Full Model × Prompt × Concurrency Sweep
+#
+# Tests all currently-live models against short/medium/long prompts
+# across concurrency levels 1,2,4,8,16,32.
+# Results written to results/ as individual JSON files.
+# Run plot_results.py afterward to generate figures.
+# ============================================================
+
+set -euo pipefail
+
+VENV="${HOME}/crux/alcf-inference-venv"
+REPO_DIR="${HOME}/crux/crux-agent-benchmarks"
+AUTH_SCRIPT="${HOME}/crux/inference_auth_token.py"
+
+# Proxy — required for outbound HTTPS from compute nodes
+export http_proxy="http://proxy.alcf.anl.gov:3128"
+export https_proxy="http://proxy.alcf.anl.gov:3128"
+export ftp_proxy="http://proxy.alcf.anl.gov:3128"
+export HTTP_PROXY="http://proxy.alcf.anl.gov:3128"
+export HTTPS_PROXY="http://proxy.alcf.anl.gov:3128"
+
+# Currently-live models on Sophia (as of 2026-06-15)
+MODELS=(
+    "openai/gpt-oss-20b"
+    "openai/gpt-oss-120b"
+    "google/gemma-4-31B-it"
+    "google/gemma-3-27b-it"
+    "google/gemma-4-E4B-it"
+    "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    "meta-llama/Meta-Llama-3.1-70B-Instruct"
+    "meta-llama/Llama-3.3-70B-Instruct"
+    "mistralai/Mixtral-8x22B-Instruct-v0.1"
+)
+
+PROMPT_SIZES=("short" "medium" "long")
+SWEEP_LEVELS="1,2,4,8,16,32"
+WAVES=3
+MAX_TOKENS=256
+
+echo "=========================================="
+echo "Job ID:    ${PBS_JOBID}"
+echo "Node:      $(hostname)"
+echo "Started:   $(date)"
+echo "Models:    ${#MODELS[@]}"
+echo "Prompts:   ${PROMPT_SIZES[*]}"
+echo "Levels:    ${SWEEP_LEVELS}"
+echo "=========================================="
+
+cd "${REPO_DIR}"
+mkdir -p logs results
+
+source "${VENV}/bin/activate"
+echo "Python: $(which python) $(python --version)"
+echo ""
+
+TOTAL=$((${#MODELS[@]} * ${#PROMPT_SIZES[@]}))
+COUNT=0
+
+for MODEL in "${MODELS[@]}"; do
+    # Sanitize model name for use in filenames
+    MODEL_SLUG=$(echo "${MODEL}" | tr '/' '_' | tr '.' '_')
+
+    for PROMPT_SIZE in "${PROMPT_SIZES[@]}"; do
+        COUNT=$((COUNT + 1))
+        echo ""
+        echo "══════════════════════════════════════════════════════════════"
+        echo "  [${COUNT}/${TOTAL}] Model: ${MODEL}  |  Prompt: ${PROMPT_SIZE}"
+        echo "══════════════════════════════════════════════════════════════"
+
+        OUTPUT="results/sweep_${MODEL_SLUG}_${PROMPT_SIZE}.json"
+
+        # Skip if already done (allows re-run on partial failure)
+        if [ -f "${OUTPUT}" ]; then
+            echo "  Already exists, skipping: ${OUTPUT}"
+            continue
+        fi
+
+        python benchmark.py \
+            --model "${MODEL}" \
+            --max-tokens "${MAX_TOKENS}" \
+            --waves "${WAVES}" \
+            --sweep \
+            --sweep-levels "${SWEEP_LEVELS}" \
+            --prompt-size "${PROMPT_SIZE}" \
+            --auth-script "${AUTH_SCRIPT}" \
+            --output "${OUTPUT}" \
+            2>&1 || echo "  WARNING: run failed for ${MODEL} / ${PROMPT_SIZE}, continuing..."
+
+        # Brief pause between models to avoid hammering the endpoint
+        sleep 5
+    done
+done
+
+echo ""
+echo "=========================================="
+echo "All sweeps complete."
+echo "Finished: $(date)"
+echo "Results:"
+ls -lh results/sweep_*.json 2>/dev/null | awk '{print "  "$NF, $5}'
+echo "=========================================="

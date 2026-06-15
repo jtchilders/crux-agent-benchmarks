@@ -35,6 +35,11 @@ from statistics import mean, median, quantiles
 
 import httpx
 
+try:
+    from prompts import PROMPTS as PROMPT_LIBRARY
+except ImportError:
+    PROMPT_LIBRARY = {}
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -309,6 +314,9 @@ def parse_args():
                         help="Max completion tokens per call")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT,
                         help="Prompt text to send")
+    parser.add_argument("--prompt-size", default=None,
+                        choices=["short", "medium", "long"],
+                        help="Use a named prompt from prompts.py (short/medium/long)")
     parser.add_argument("--prompt-file", default=None,
                         help="File containing the prompt (overrides --prompt)")
     parser.add_argument("--base-url",
@@ -338,9 +346,12 @@ async def main_async(args):
 
     # Prompt
     prompt = args.prompt
-    if args.prompt_file:
+    if args.prompt_size and PROMPT_LIBRARY:
+        prompt = PROMPT_LIBRARY[args.prompt_size]
+    elif args.prompt_file:
         with open(args.prompt_file) as f:
             prompt = f.read().strip()
+    prompt_label = args.prompt_size or ("file" if args.prompt_file else "custom")
 
     stream = not args.no_stream
 
@@ -389,6 +400,7 @@ async def main_async(args):
 
         config = {
             "model": args.model,
+            "prompt_label": prompt_label,
             "concurrency": concurrency,
             "waves": args.waves,
             "max_tokens": args.max_tokens,
