@@ -1,0 +1,78 @@
+#!/bin/bash -l
+#PBS -N alcf-inference-bench
+#PBS -l select=1:system=crux
+#PBS -l place=scatter
+#PBS -l walltime=1:00:00
+#PBS -q debug
+#PBS -A YOUR_PROJECT_HERE
+#PBS -l filesystems=home
+#PBS -o logs/benchmark.out
+#PBS -e logs/benchmark.err
+
+# ============================================================
+# ALCF Inference Endpoint Benchmark — PBS Job Script
+# ============================================================
+# Runs on a single Crux compute node. All LLM inference calls
+# go out to the Sophia vLLM endpoint (no local GPU needed).
+#
+# Edit the variables below before submitting:
+#   PBS -A  : your ALCF project allocation
+#   MODEL   : model to benchmark
+#   SWEEP   : set to 1 to run concurrency sweep, 0 for single run
+#   CONCURRENCY : concurrency level (ignored if SWEEP=1)
+# ============================================================
+
+set -euo pipefail
+
+# --- Configuration ---
+VENV="${HOME}/crux/alcf-inference-venv"
+REPO_DIR="${HOME}/crux/crux-agent-benchmarks"
+AUTH_SCRIPT="${HOME}/crux/inference_auth_token.py"
+
+MODEL="openai/gpt-oss-20b"
+MAX_TOKENS=256
+WAVES=3
+SWEEP=1                  # 1=run sweep across concurrency levels, 0=single run
+CONCURRENCY=16           # used only if SWEEP=0
+SWEEP_LEVELS="1,2,4,8,16,32"
+
+# Proxy (needed for outbound HTTPS from compute nodes; ALCF internal may not need this)
+export http_proxy="http://proxy.alcf.anl.gov:3128"
+export https_proxy="http://proxy.alcf.anl.gov:3128"
+export ftp_proxy="http://proxy.alcf.anl.gov:3128"
+
+# --- Setup ---
+echo "=========================================="
+echo "Job ID:    ${PBS_JOBID}"
+echo "Node:      $(hostname)"
+echo "Started:   $(date)"
+echo "Model:     ${MODEL}"
+echo "Sweep:     ${SWEEP}"
+echo "=========================================="
+
+cd "${REPO_DIR}"
+mkdir -p logs results
+
+source "${VENV}/bin/activate"
+echo "Python: $(which python) $(python --version)"
+
+# --- Run ---
+if [ "${SWEEP}" -eq 1 ]; then
+    python benchmark.py \
+        --model "${MODEL}" \
+        --max-tokens "${MAX_TOKENS}" \
+        --waves "${WAVES}" \
+        --sweep \
+        --sweep-levels "${SWEEP_LEVELS}" \
+        --auth-script "${AUTH_SCRIPT}"
+else
+    python benchmark.py \
+        --model "${MODEL}" \
+        --max-tokens "${MAX_TOKENS}" \
+        --waves "${WAVES}" \
+        --concurrency "${CONCURRENCY}" \
+        --auth-script "${AUTH_SCRIPT}"
+fi
+
+echo ""
+echo "Finished: $(date)"
