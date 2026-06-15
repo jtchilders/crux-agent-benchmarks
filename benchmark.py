@@ -117,6 +117,7 @@ async def call_once(
         "total_tokens": None,
         "error": None,
         "success": False,
+        "reasoning_tokens": 0,
     }
 
     t0 = result["start_time"]
@@ -125,6 +126,8 @@ async def call_once(
         if stream:
             first_token = False
             collected_text = []
+            reasoning_tokens = 0
+            payload["stream_options"] = {"include_usage": True}
             async with client.stream(
                 "POST", url, headers=headers, json=payload, timeout=timeout
             ) as resp:
@@ -139,21 +142,29 @@ async def call_once(
                         chunk = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    content = delta.get("content", "")
-                    if content and not first_token:
+                    choices = chunk.get("choices", [])
+                    delta = choices[0].get("delta", {}) if choices else {}
+                    # Support both content and reasoning tokens (reasoning models)
+                    content = delta.get("content") or ""
+                    reasoning = delta.get("reasoning") or ""
+                    any_token = content or reasoning
+                    if any_token and not first_token:
                         result["ttft_s"] = time.monotonic() - t0
                         first_token = True
                     if content:
                         collected_text.append(content)
-                    # usage may arrive in the final chunk
+                    if reasoning:
+                        reasoning_tokens += len(reasoning.split())
+                    # usage arrives in the final chunk with stream_options
                     usage = chunk.get("usage")
                     if usage:
                         result["prompt_tokens"] = usage.get("prompt_tokens")
                         result["completion_tokens"] = usage.get("completion_tokens")
                         result["total_tokens"] = usage.get("total_tokens")
 
+            # Fallback: count collected text words if usage not returned
             result["completion_tokens"] = result["completion_tokens"] or len(collected_text)
+            result["reasoning_tokens"] = reasoning_tokens
         else:
             resp = await client.post(url, headers=headers, json=payload, timeout=timeout)
             resp.raise_for_status()
@@ -190,7 +201,7 @@ async def run_wave(
 ) -> list[dict]:
     """Launch `concurrency` calls simultaneously and wait for all to finish."""
     limits = httpx.Limits(max_connections=concurrency + 4, max_keepalive_connections=concurrency)
-    async with httpx.AsyncClient(limits=limits, http2=True) as client:
+    async with httpx.AsyncClient(limits=limits) as client:
         tasks = [
             call_once(client, base_url, token, model, prompt, max_tokens, stream, timeout, i)
             for i in range(concurrency)
