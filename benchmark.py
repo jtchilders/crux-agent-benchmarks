@@ -2,25 +2,33 @@
 """
 ALCF Inference Endpoint Benchmark
 ==================================
-Fires N parallel async chat-completion calls to the Sophia vLLM endpoint and
+Fires N parallel async chat-completion calls to an LLM inference endpoint and
 measures time-to-first-token (TTFT), total latency, and aggregate token throughput.
+
+Supports two backends:
+  - sophia  (default): ALCF Sophia vLLM cluster (Globus auth via inference_auth_token.py)
+  - argo:   ALCF Argo API proxy (static API key, OpenAI-compatible)
 
 Usage:
     python benchmark.py [options]
 
-    --model         Model ID (default: openai/gpt-oss-20b)
+    --backend       Backend to use: sophia or argo (default: sophia)
+    --api-key       Static API key (required for argo; env ARGO_API_KEY also works)
+    --model         Model ID (default: openai/gpt-oss-20b for sophia)
     --concurrency   Number of parallel calls per wave (default: 8)
     --waves         Number of waves to run (default: 3)
     --max-tokens    Max tokens per response (default: 256)
     --prompt        Prompt to use (default: a medium-complexity coding task)
     --prompt-file   Path to a file containing the prompt (overrides --prompt)
-    --base-url      Inference API base URL (default: Sophia vLLM)
-    --auth-script   Path to inference_auth_token.py (default: auto-detect)
+    --base-url      Inference API base URL (auto-set per backend, or override)
+    --auth-script   Path to inference_auth_token.py (sophia backend only)
     --output        Output JSON path (default: results/benchmark_<timestamp>.json)
     --sweep         Run a sweep of concurrency levels: 1,2,4,8,16,32
     --no-stream     Disable streaming (measures total latency only, no TTFT)
     --timeout       Per-call timeout in seconds (default: 120)
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -84,6 +92,30 @@ DEFAULT_PROMPT = (
 )
 
 # ---------------------------------------------------------------------------
+# Backend config
+# ---------------------------------------------------------------------------
+
+BACKEND_DEFAULTS = {
+    "sophia": {
+        "base_url": "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
+        "model": "openai/gpt-oss-20b",
+    },
+    "argo": {
+        "base_url": "https://apps.inside.anl.gov/argoapi/v1",
+        "model": "GPT-5",
+    },
+}
+
+# Models that reject the temperature parameter (Argo-specific)
+_SKIP_TEMPERATURE_PATTERNS = ["claude", "opus", "sonnet", "haiku"]
+
+def _skip_temperature(model: str) -> bool:
+    """Return True if this model rejects the temperature parameter."""
+    m = model.lower()
+    return any(p in m for p in _SKIP_TEMPERATURE_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
 # Core async call
 # ---------------------------------------------------------------------------
 
@@ -97,6 +129,7 @@ async def call_once(
     stream: bool,
     timeout: float,
     call_id: int,
+    backend: str = "sophia",
 ) -> dict:
     """Fire one streaming chat-completion call and record timing metrics."""
     url = base_url.rstrip("/") + "/chat/completions"
@@ -109,8 +142,10 @@ async def call_once(
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "stream": stream,
-        "temperature": 0.2,
     }
+    # Some Argo models (Claude/Anthropic) reject the temperature parameter
+    if not _skip_temperature(model):
+        payload["temperature"] = 0.2
 
     result = {
         "call_id": call_id,
@@ -123,6 +158,7 @@ async def call_once(
         "error": None,
         "success": False,
         "reasoning_tokens": 0,
+        "argo_latency": None,
     }
 
     t0 = result["start_time"]
@@ -166,6 +202,10 @@ async def call_once(
                         result["prompt_tokens"] = usage.get("prompt_tokens")
                         result["completion_tokens"] = usage.get("completion_tokens")
                         result["total_tokens"] = usage.get("total_tokens")
+                    # Capture Argo latency_checkpoint if present
+                    lc = chunk.get("latency_checkpoint")
+                    if lc:
+                        result["argo_latency"] = lc
 
             # Fallback: count collected text words if usage not returned
             result["completion_tokens"] = result["completion_tokens"] or len(collected_text)
@@ -178,6 +218,10 @@ async def call_once(
             result["prompt_tokens"] = usage.get("prompt_tokens")
             result["completion_tokens"] = usage.get("completion_tokens")
             result["total_tokens"] = usage.get("total_tokens")
+            # Capture Argo latency_checkpoint if present
+            lc = data.get("latency_checkpoint")
+            if lc:
+                result["argo_latency"] = lc
 
         result["total_latency_s"] = time.monotonic() - t0
         result["success"] = True
@@ -203,12 +247,13 @@ async def run_wave(
     stream: bool,
     timeout: float,
     wave_id: int,
+    backend: str = "sophia",
 ) -> list[dict]:
     """Launch `concurrency` calls simultaneously and wait for all to finish."""
     limits = httpx.Limits(max_connections=concurrency + 4, max_keepalive_connections=concurrency)
     async with httpx.AsyncClient(limits=limits) as client:
         tasks = [
-            call_once(client, base_url, token, model, prompt, max_tokens, stream, timeout, i)
+            call_once(client, base_url, token, model, prompt, max_tokens, stream, timeout, i, backend)
             for i in range(concurrency)
         ]
         results = await asyncio.gather(*tasks)
@@ -319,11 +364,14 @@ def parse_args():
                         help="Use a named prompt from prompts.py (short/medium/long)")
     parser.add_argument("--prompt-file", default=None,
                         help="File containing the prompt (overrides --prompt)")
-    parser.add_argument("--base-url",
-                        default="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-                        help="Inference API base URL")
+    parser.add_argument("--backend", default="sophia", choices=["sophia", "argo"],
+                        help="Backend: sophia (ALCF vLLM) or argo (ALCF API proxy)")
+    parser.add_argument("--api-key", default=None,
+                        help="Static API key for argo backend (or set ARGO_API_KEY env var)")
+    parser.add_argument("--base-url", default=None,
+                        help="Inference API base URL (auto-set per backend, or override)")
     parser.add_argument("--auth-script", default=None,
-                        help="Path to inference_auth_token.py")
+                        help="Path to inference_auth_token.py (sophia backend only)")
     parser.add_argument("--output", default=None,
                         help="Output JSON path (default: results/benchmark_<timestamp>.json)")
     parser.add_argument("--sweep", action="store_true",
@@ -338,11 +386,34 @@ def parse_args():
 
 
 async def main_async(args):
-    # Load auth
-    print("Loading auth token...")
-    auth_mod = load_auth_script(args.auth_script)
-    token = get_token(auth_mod)
-    print("Token acquired.")
+    backend = args.backend
+    defaults = BACKEND_DEFAULTS[backend]
+    base_url = args.base_url or defaults["base_url"]
+
+    # --- Auth ---
+    if backend == "argo":
+        token = args.api_key or os.environ.get("ARGO_API_KEY")
+        if not token:
+            print("ERROR: --api-key or ARGO_API_KEY env var required for argo backend.", file=sys.stderr)
+            sys.exit(1)
+        auth_mod = None
+        print(f"Argo backend — API key: {token[:4]}***")
+    else:
+        print("Loading Sophia auth token...")
+        auth_mod = load_auth_script(args.auth_script)
+        token = get_token(auth_mod)
+        print("Token acquired.")
+
+    # Use backend default model if user didn't override and the current default
+    # doesn't match the backend (e.g. sophia model on argo)
+    model = args.model
+    if model == "openai/gpt-oss-20b" and backend == "argo":
+        model = defaults["model"]
+        print(f"  (using default argo model: {model})")
+
+    print(f"Backend: {backend}  |  Base URL: {base_url}  |  Model: {model}")
+    if _skip_temperature(model):
+        print(f"  Note: temperature parameter omitted for {model}")
 
     # Prompt
     prompt = args.prompt
@@ -379,19 +450,22 @@ async def main_async(args):
             print(f"  Wave {wave+1}/{args.waves} | concurrency={concurrency} ...", end=" ", flush=True)
             wave_t0 = time.monotonic()
 
-            # Refresh token each wave (they're cheap)
-            token = get_token(auth_mod)
+            # Refresh token each wave for sophia (Globus tokens are cheap);
+            # for argo the static key doesn't change.
+            if auth_mod is not None:
+                token = get_token(auth_mod)
 
             calls = await run_wave(
-                base_url=args.base_url,
+                base_url=base_url,
                 token=token,
-                model=args.model,
+                model=model,
                 prompt=prompt,
                 max_tokens=args.max_tokens,
                 concurrency=concurrency,
                 stream=stream,
                 timeout=args.timeout,
                 wave_id=wave,
+                backend=backend,
             )
             wave_elapsed = time.monotonic() - wave_t0
             n_ok = sum(1 for c in calls if c["success"])
@@ -399,13 +473,14 @@ async def main_async(args):
             all_calls.extend(calls)
 
         config = {
-            "model": args.model,
+            "backend": backend,
+            "model": model,
             "prompt_label": prompt_label,
             "concurrency": concurrency,
             "waves": args.waves,
             "max_tokens": args.max_tokens,
             "stream": stream,
-            "base_url": args.base_url,
+            "base_url": base_url,
             "prompt_tokens_approx": len(prompt),
             "timestamp": timestamp,
         }

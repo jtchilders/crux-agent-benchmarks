@@ -36,6 +36,7 @@ except ImportError:
 # ─── display config ────────────────────────────────────────────────────────────
 
 MODEL_LABELS = {
+    # Sophia models
     "openai/gpt-oss-20b":                       "gpt-oss-20b",
     "openai/gpt-oss-120b":                      "gpt-oss-120b",
     "google/gemma-4-E4B-it":                    "gemma-4-E4B",
@@ -45,11 +46,21 @@ MODEL_LABELS = {
     "meta-llama/Meta-Llama-3.1-70B-Instruct":  "Llama-3.1-70B",
     "meta-llama/Llama-3.3-70B-Instruct":       "Llama-3.3-70B",
     "mistralai/Mixtral-8x22B-Instruct-v0.1":   "Mixtral-8x22B",
+    # Argo models
+    "Claude Sonnet 4.6":                        "Claude Sonnet 4.6",
+    "Claude Opus 4.7":                          "Claude Opus 4.7",
+    "GPT-5":                                    "GPT-5",
+    "GPT-4.1":                                  "GPT-4.1",
+    "GPT-4.1-nano":                             "GPT-4.1-nano",
+    "Gemini 2.5 Flash":                         "Gemini 2.5 Flash",
+    "Gemini 2.5 Pro":                           "Gemini 2.5 Pro",
 }
 
 COLORS = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+    "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+    "#c49c94",
 ]
 
 PROMPT_ORDER  = ["short", "medium", "long"]

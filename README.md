@@ -1,8 +1,11 @@
 # crux-agent-benchmarks
 
-Throughput and latency benchmarks for the ALCF Inference Endpoints, designed to
+Throughput and latency benchmarks for ALCF inference services, designed to
 characterize how many parallel LLM agent calls can be sustained from Crux compute
-nodes against the Sophia (A100) vLLM cluster.
+nodes. Supports two backends:
+
+- **Sophia** — ALCF's on-premise A100 vLLM cluster (open-weight models)
+- **Argo** — ALCF's hosted API proxy to commercial models (OpenAI, Anthropic, Google)
 
 ## Goals
 
@@ -14,8 +17,12 @@ nodes against the Sophia (A100) vLLM cluster.
 ## Structure
 
 ```
-benchmark.py          # Main async benchmark runner
-run_benchmark.pbs     # PBS job script (single Crux node)
+benchmark.py          # Main async benchmark runner (--backend sophia|argo)
+run_benchmark.pbs     # PBS job script — single model, Sophia
+run_full_sweep.pbs    # PBS job script — all Sophia models × prompts × concurrencies
+run_argo_sweep.pbs    # PBS job script — Argo models sweep
+plot_results.py       # Generate throughput/latency/TTFT/error plots
+prompts.py            # Short/medium/long prompt definitions
 requirements.txt      # Python dependencies
 results/              # Output JSON + summary files (gitignored)
 ```
@@ -34,24 +41,56 @@ source ~/crux/alcf-inference-venv/bin/activate
 
 ## Running
 
-### Interactive (from login node, quick smoke test)
+### Sophia — interactive smoke test
 
 ```bash
 source ~/crux/alcf-inference-venv/bin/activate
 python benchmark.py --concurrency 4 --model openai/gpt-oss-20b --max-tokens 256
 ```
 
-### Batch (PBS job, full sweep)
+### Sophia — batch full sweep
 
 ```bash
-qsub run_benchmark.pbs
+qsub run_full_sweep.pbs
 ```
+
+### Argo — interactive smoke test
+
+```bash
+source ~/crux/alcf-inference-venv/bin/activate
+python benchmark.py --backend argo --api-key jchilders --model "GPT-5" --concurrency 4
+```
+
+### Argo — batch full sweep
+
+```bash
+qsub run_argo_sweep.pbs
+```
+
+**Note:** Some Argo models (Claude/Anthropic) reject the `temperature` parameter.
+The benchmark auto-detects these and omits it. Argo also returns bonus
+`latency_checkpoint` data (engine TTFT, service TTFT, etc.) which is captured
+in the per-call results under `argo_latency`.
 
 ## Authentication
 
-The benchmark uses `~/crux/inference_auth_token.py` (already authenticated).
+### Sophia backend (default)
+
+Uses `~/crux/inference_auth_token.py` (Globus auth, already authenticated).
 Tokens are valid 48h and auto-refresh. No action needed unless you see auth errors,
 in which case re-run `python ~/crux/inference_auth_token.py authenticate`.
+
+### Argo backend
+
+Argo uses a simple static API key — your ANL username. Pass it via `--api-key`
+or set the `ARGO_API_KEY` environment variable:
+
+```bash
+export ARGO_API_KEY="jchilders"
+python benchmark.py --backend argo --model "GPT-5" --sweep
+```
+
+No token minting or refresh needed.
 
 ## Output
 
